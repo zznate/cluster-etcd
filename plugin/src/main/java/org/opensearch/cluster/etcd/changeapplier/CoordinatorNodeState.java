@@ -12,14 +12,9 @@ import org.opensearch.cluster.metadata.Metadata;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.cluster.node.DiscoveryNodes;
 import org.opensearch.cluster.routing.IndexRoutingTable;
-import org.opensearch.cluster.routing.IndexShardRoutingTable;
-import org.opensearch.cluster.routing.RecoverySource;
 import org.opensearch.cluster.routing.RoutingTable;
-import org.opensearch.cluster.routing.ShardRouting;
-import org.opensearch.cluster.routing.UnassignedInfo;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.core.index.Index;
-import org.opensearch.core.index.shard.ShardId;
 import org.opensearch.indices.IndicesService;
 
 import java.util.Collection;
@@ -61,40 +56,26 @@ public class CoordinatorNodeState extends NodeState {
             boolean indexHasPrimary = false;
             IndexRoutingTable.Builder indexRoutingTableBuilder = IndexRoutingTable.builder(index);
             for (List<NodeShardAssignment> shardRouting : indexEntry.getValue()) {
-                ShardId shardId = new ShardId(index, shardNum);
-                IndexShardRoutingTable.Builder shardRoutingTableBuilder = new IndexShardRoutingTable.Builder(shardId);
-                boolean shardHasPrimary = false;
-                for (NodeShardAssignment shardAssignment : shardRouting) {
-                    ShardRole shardRole = shardAssignment.shardRole();
-                    if (shardRole == ShardRole.PRIMARY) {
-                        if (indexHasPrimary == false && shardNum > 0) {
-                            // If the index has primary shards, we need to figure it out from the first shard.
-                            throw new IllegalStateException(
-                                "Index "
-                                    + indexEntry.getKey()
-                                    + " has at least one primary shard, but the first shard has no primary assigned."
-                            );
-                        }
-                        indexHasPrimary = true;
-                        shardHasPrimary = true;
+                boolean shardHasPrimary = IndexStateAssembler.contributeRemoteShard(
+                    index,
+                    shardNum,
+                    shardRouting,
+                    indexRoutingTableBuilder
+                );
+                if (shardHasPrimary) {
+                    if (indexHasPrimary == false && shardNum > 0) {
+                        // If the index has primary shards, we need to figure it out from the first shard.
+                        throw new IllegalStateException(
+                            "Index " + indexEntry.getKey() + " has at least one primary shard, but the first shard has no primary assigned."
+                        );
                     }
-                    ShardRouting nodeEntry = ShardRouting.newUnassigned(
-                        shardId,
-                        shardRole == ShardRole.PRIMARY,
-                        shardRole == ShardRole.SEARCH_REPLICA,
-                        RecoverySource.EmptyStoreRecoverySource.INSTANCE,
-                        new UnassignedInfo(UnassignedInfo.Reason.INDEX_CREATED, "initializing")
-                    );
-                    nodeEntry = nodeEntry.initialize(shardAssignment.nodeId(), null, ShardRouting.UNAVAILABLE_EXPECTED_SHARD_SIZE);
-                    nodeEntry = nodeEntry.moveToStarted();
-                    shardRoutingTableBuilder.addShard(nodeEntry);
+                    indexHasPrimary = true;
                 }
                 if (indexHasPrimary == true && shardHasPrimary == false) {
                     throw new IllegalStateException(
                         "Index " + indexEntry.getKey() + " has a primary shard, but shard " + shardNum + " has no primary assigned."
                     );
                 }
-                indexRoutingTableBuilder.addIndexShard(shardRoutingTableBuilder.build());
                 shardNum++;
             }
             Settings.Builder indexSettings = Settings.builder()

@@ -20,6 +20,7 @@ import org.opensearch.core.index.shard.ShardId;
 
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -193,6 +194,45 @@ final class IndexStateAssembler {
             // the index is search-only. Otherwise, an assertion in the RoutingNodes constructor will fail.
             settingsBuilder.put(IndexMetadata.INDEX_BLOCKS_SEARCH_ONLY_SETTING.getKey(), true);
         }
+    }
+
+    /**
+     * Contributes a shard coordinated for a remote node to the given index routing table, as synthetic
+     * STARTED routings pointing at the assigned node ids (the coordinator never holds these shards itself).
+     *
+     * @param index                    the index the shard belongs to
+     * @param shardNum                the shard number being contributed
+     * @param shardAssignments        the per-node assignments for this shard
+     * @param indexRoutingTableBuilder accumulates the shard routing table
+     * @return whether this shard has a primary assigned
+     */
+    static boolean contributeRemoteShard(
+        Index index,
+        int shardNum,
+        List<NodeShardAssignment> shardAssignments,
+        IndexRoutingTable.Builder indexRoutingTableBuilder
+    ) {
+        ShardId shardId = new ShardId(index, shardNum);
+        IndexShardRoutingTable.Builder shardRoutingTableBuilder = new IndexShardRoutingTable.Builder(shardId);
+        boolean shardHasPrimary = false;
+        for (NodeShardAssignment shardAssignment : shardAssignments) {
+            ShardRole shardRole = shardAssignment.shardRole();
+            if (shardRole == ShardRole.PRIMARY) {
+                shardHasPrimary = true;
+            }
+            ShardRouting nodeEntry = ShardRouting.newUnassigned(
+                shardId,
+                shardRole == ShardRole.PRIMARY,
+                shardRole == ShardRole.SEARCH_REPLICA,
+                RecoverySource.EmptyStoreRecoverySource.INSTANCE,
+                new UnassignedInfo(UnassignedInfo.Reason.INDEX_CREATED, "initializing")
+            );
+            nodeEntry = nodeEntry.initialize(shardAssignment.nodeId(), null, ShardRouting.UNAVAILABLE_EXPECTED_SHARD_SIZE);
+            nodeEntry = nodeEntry.moveToStarted();
+            shardRoutingTableBuilder.addShard(nodeEntry);
+        }
+        indexRoutingTableBuilder.addIndexShard(shardRoutingTableBuilder.build());
+        return shardHasPrimary;
     }
 
     /**

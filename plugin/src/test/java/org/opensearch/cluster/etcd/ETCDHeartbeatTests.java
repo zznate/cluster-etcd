@@ -312,10 +312,6 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
                     null,
                     null,
                     null,
-                    null,
-                    null,
-                    null,
-                    null,
                     null
                 )
             ),

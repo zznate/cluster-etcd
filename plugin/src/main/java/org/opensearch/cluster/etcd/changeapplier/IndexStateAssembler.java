@@ -39,38 +39,34 @@ final class IndexStateAssembler {
     private IndexStateAssembler() {}
 
     /**
-     * Contributes a shard held locally by this node to the given index builders, reproducing the
-     * recovery-source, allocation-id-preservation, peer-wiring, in-sync and primary-term handling of a
-     * data node.
+     * Appends the routing entries this node contributes as the holder of {@code dataNodeShard} to the given
+     * per-shard routing table, reproducing the recovery-source, allocation-id-preservation, peer-wiring,
+     * in-sync and primary-term handling of a data node. The caller owns the per-shard
+     * {@link IndexShardRoutingTable.Builder} so a combined node can also append remote routings for the same
+     * shard before building it.
      *
      * @param index                    the index the shard belongs to
      * @param dataNodeShard            the locally-held shard to contribute
-     * @param localNode               this node, the holder of the shard
+     * @param localNode                this node, the holder of the shard
      * @param previousIndexRoutingTable the index's routing table from the previous cluster state (may be null)
-     * @param indexMetadataBuilder    accumulates primary terms and in-sync allocation ids
-     * @param indexRoutingTableBuilder accumulates the shard routing table
-     * @param nodesBuilder            accumulates discovery nodes referenced by peer (primary/replica) routings
-     * @param summary                 accumulates per-index primary / search-replica presence for the search-only finalizer
+     * @param shardTableBuilder        the per-shard routing table being assembled for this shard
+     * @param indexMetadataBuilder     accumulates primary terms and in-sync allocation ids
+     * @param nodesBuilder             accumulates discovery nodes referenced by peer (primary/replica) routings
      */
     static void contributeHeldShard(
         Index index,
         DataNodeShard dataNodeShard,
         DiscoveryNode localNode,
         IndexRoutingTable previousIndexRoutingTable,
+        IndexShardRoutingTable.Builder shardTableBuilder,
         IndexMetadata.Builder indexMetadataBuilder,
-        IndexRoutingTable.Builder indexRoutingTableBuilder,
-        DiscoveryNodes.Builder nodesBuilder,
-        IndexShardSummary summary
+        DiscoveryNodes.Builder nodesBuilder
     ) {
         int shardNum = dataNodeShard.getShardNum();
         indexMetadataBuilder.primaryTerm(shardNum, 1);
         ShardRole role = dataNodeShard.getShardRole();
-        // A held PRIMARY or REPLICA contributes a primary routing for this shard (a held DocRepReplica always
-        // carries its primary's allocation); a held SEARCH_REPLICA does not.
-        summary.recordShard(role != ShardRole.SEARCH_REPLICA);
         ShardId shardId = new ShardId(index, shardNum);
 
-        IndexShardRoutingTable.Builder newShardRoutingTable = new IndexShardRoutingTable.Builder(shardId);
         IndexShardRoutingTable previousShardRoutingTable = previousIndexRoutingTable == null
             ? new IndexShardRoutingTable.Builder(shardId).build()
             : previousIndexRoutingTable.shard(shardNum);
@@ -84,7 +80,7 @@ final class IndexStateAssembler {
 
             if (previousShardRoutingTable.primaryShard() != null
                 && previousShardRoutingTable.primaryShard().currentNodeId().equals(primaryNode.nodeId())) {
-                newShardRoutingTable.addShard(previousShardRoutingTable.primaryShard());
+                shardTableBuilder.addShard(previousShardRoutingTable.primaryShard());
             } else {
                 ShardRouting primaryShardRouting = ShardRouting.newUnassigned(
                     shardId,
@@ -95,8 +91,8 @@ final class IndexStateAssembler {
                 )
                     .initialize(primaryNode.nodeId(), primaryAllocation.allocationId(), ShardRouting.UNAVAILABLE_EXPECTED_SHARD_SIZE)
                     .moveToStarted();
-                // Add the primary shard routing to the index routing table
-                newShardRoutingTable.addShard(primaryShardRouting);
+                // Add the remote primary shard routing for this held replica
+                shardTableBuilder.addShard(primaryShardRouting);
             }
             nodesBuilder.add(primaryNode.toDiscoveryNode());
         }
@@ -121,7 +117,7 @@ final class IndexStateAssembler {
                     replicaShardRouting = replicaShardRouting.moveToStarted();
                 }
                 // Add the replica shard routing to the index routing table
-                newShardRoutingTable.addShard(replicaShardRouting);
+                shardTableBuilder.addShard(replicaShardRouting);
                 nodesBuilder.add(replicaNode.toDiscoveryNode());
             }
         }
@@ -187,39 +183,37 @@ final class IndexStateAssembler {
                 );
             }
         }
-        newShardRoutingTable.addShard(shardRouting);
+        shardTableBuilder.addShard(shardRouting);
 
-        indexRoutingTableBuilder.addIndexShard(newShardRoutingTable.build());
         inSyncAllocationIds.add(shardRouting.allocationId().getId());
         indexMetadataBuilder.putInSyncAllocationIds(shardNum, inSyncAllocationIds);
     }
 
     /**
-     * Contributes a shard coordinated for a remote node to the given index routing table, as synthetic
-     * STARTED routings pointing at the assigned node ids (the coordinator never holds these shards itself).
+     * Appends synthetic STARTED routings for the remote assignments of one shard to the given per-shard
+     * routing table (a coordinator never holds these shards itself). When {@code skipNodeId} is non-null, the
+     * assignment on that node is skipped so a combined node uses its real held routing for its own copy
+     * instead of this synthetic one, while still picking up the other nodes (notably the primary).
      *
-     * @param index                    the index the shard belongs to
-     * @param shardNum                the shard number being contributed
-     * @param shardAssignments        the per-node assignments for this shard
-     * @param indexRoutingTableBuilder accumulates the shard routing table
-     * @param summary                 accumulates per-index primary presence for the search-only finalizer
-     * @return whether this shard has a primary assigned
+     * @param index             the index the shard belongs to
+     * @param shardNum          the shard number being contributed
+     * @param shardAssignments  the per-node assignments for this shard
+     * @param skipNodeId        a node id whose assignment to skip, or null to include all
+     * @param shardTableBuilder the per-shard routing table being assembled for this shard
      */
-    static boolean contributeRemoteShard(
+    static void contributeRemoteShard(
         Index index,
         int shardNum,
         List<NodeShardAssignment> shardAssignments,
-        IndexRoutingTable.Builder indexRoutingTableBuilder,
-        IndexShardSummary summary
+        String skipNodeId,
+        IndexShardRoutingTable.Builder shardTableBuilder
     ) {
         ShardId shardId = new ShardId(index, shardNum);
-        IndexShardRoutingTable.Builder shardRoutingTableBuilder = new IndexShardRoutingTable.Builder(shardId);
-        boolean shardHasPrimary = false;
         for (NodeShardAssignment shardAssignment : shardAssignments) {
-            ShardRole shardRole = shardAssignment.shardRole();
-            if (shardRole == ShardRole.PRIMARY) {
-                shardHasPrimary = true;
+            if (skipNodeId != null && skipNodeId.equals(shardAssignment.nodeId())) {
+                continue;
             }
+            ShardRole shardRole = shardAssignment.shardRole();
             ShardRouting nodeEntry = ShardRouting.newUnassigned(
                 shardId,
                 shardRole == ShardRole.PRIMARY,
@@ -229,10 +223,68 @@ final class IndexStateAssembler {
             );
             nodeEntry = nodeEntry.initialize(shardAssignment.nodeId(), null, ShardRouting.UNAVAILABLE_EXPECTED_SHARD_SIZE);
             nodeEntry = nodeEntry.moveToStarted();
-            shardRoutingTableBuilder.addShard(nodeEntry);
+            shardTableBuilder.addShard(nodeEntry);
         }
+    }
+
+    /**
+     * Single-source convenience for a data node: assemble the routing table for one held shard, record its
+     * primary presence, and add it to the index routing table.
+     */
+    static void addHeldShard(
+        Index index,
+        DataNodeShard dataNodeShard,
+        DiscoveryNode localNode,
+        IndexRoutingTable previousIndexRoutingTable,
+        IndexRoutingTable.Builder indexRoutingTableBuilder,
+        IndexMetadata.Builder indexMetadataBuilder,
+        DiscoveryNodes.Builder nodesBuilder,
+        IndexShardSummary summary
+    ) {
+        ShardId shardId = new ShardId(index, dataNodeShard.getShardNum());
+        IndexShardRoutingTable.Builder shardTableBuilder = new IndexShardRoutingTable.Builder(shardId);
+        contributeHeldShard(
+            index,
+            dataNodeShard,
+            localNode,
+            previousIndexRoutingTable,
+            shardTableBuilder,
+            indexMetadataBuilder,
+            nodesBuilder
+        );
+        addAndRecord(shardTableBuilder, indexRoutingTableBuilder, summary);
+    }
+
+    /**
+     * Single-source convenience for a coordinator: assemble the routing table for one remote shard, record
+     * its primary presence, add it to the index routing table, and report whether it has a primary.
+     */
+    static boolean addRemoteShard(
+        Index index,
+        int shardNum,
+        List<NodeShardAssignment> shardAssignments,
+        IndexRoutingTable.Builder indexRoutingTableBuilder,
+        IndexShardSummary summary
+    ) {
+        ShardId shardId = new ShardId(index, shardNum);
+        IndexShardRoutingTable.Builder shardTableBuilder = new IndexShardRoutingTable.Builder(shardId);
+        contributeRemoteShard(index, shardNum, shardAssignments, null, shardTableBuilder);
+        return addAndRecord(shardTableBuilder, indexRoutingTableBuilder, summary);
+    }
+
+    /**
+     * Builds a per-shard routing table, records whether it has a primary in {@code summary}, adds it to the
+     * index routing table, and returns whether it has a primary.
+     */
+    private static boolean addAndRecord(
+        IndexShardRoutingTable.Builder shardTableBuilder,
+        IndexRoutingTable.Builder indexRoutingTableBuilder,
+        IndexShardSummary summary
+    ) {
+        IndexShardRoutingTable shardTable = shardTableBuilder.build();
+        boolean shardHasPrimary = shardTable.primaryShard() != null;
         summary.recordShard(shardHasPrimary);
-        indexRoutingTableBuilder.addIndexShard(shardRoutingTableBuilder.build());
+        indexRoutingTableBuilder.addIndexShard(shardTable);
         return shardHasPrimary;
     }
 

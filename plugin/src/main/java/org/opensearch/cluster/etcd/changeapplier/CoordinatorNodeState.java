@@ -54,13 +54,15 @@ public class CoordinatorNodeState extends NodeState {
             int shardNum = 0;
 
             boolean indexHasPrimary = false;
+            IndexStateAssembler.IndexShardSummary shardSummary = new IndexStateAssembler.IndexShardSummary();
             IndexRoutingTable.Builder indexRoutingTableBuilder = IndexRoutingTable.builder(index);
             for (List<NodeShardAssignment> shardRouting : indexEntry.getValue()) {
                 boolean shardHasPrimary = IndexStateAssembler.contributeRemoteShard(
                     index,
                     shardNum,
                     shardRouting,
-                    indexRoutingTableBuilder
+                    indexRoutingTableBuilder,
+                    shardSummary
                 );
                 if (shardHasPrimary) {
                     if (indexHasPrimary == false && shardNum > 0) {
@@ -83,9 +85,7 @@ public class CoordinatorNodeState extends NodeState {
                 .put(IndexMetadata.SETTING_VERSION_CREATED, Version.CURRENT)
                 .put(IndexMetadata.SETTING_NUMBER_OF_SHARDS, indexEntry.getValue().size())
                 .put(IndexMetadata.SETTING_NUMBER_OF_REPLICAS, 0);
-            if (indexHasPrimary == false) {
-                indexSettings.put(IndexMetadata.INDEX_BLOCKS_SEARCH_ONLY_SETTING.getKey(), true);
-            }
+            IndexStateAssembler.finalizeSearchOnly(shardSummary, indexSettings);
             IndexMetadata.Builder indexMetadataBuilder = IndexMetadata.builder(indexEntry.getKey()).settings(indexSettings);
             addAliasesToIndexMetadata(indexMetadataBuilder, indexEntry.getKey());
             IndexMetadata indexMetadata = indexMetadataBuilder.build();

@@ -50,7 +50,7 @@ final class IndexStateAssembler {
      * @param indexMetadataBuilder    accumulates primary terms and in-sync allocation ids
      * @param indexRoutingTableBuilder accumulates the shard routing table
      * @param nodesBuilder            accumulates discovery nodes referenced by peer (primary/replica) routings
-     * @param settingsBuilder         the index settings builder (search-only is set here for held search replicas)
+     * @param summary                 accumulates per-index primary / search-replica presence for the search-only finalizer
      */
     static void contributeHeldShard(
         Index index,
@@ -60,11 +60,14 @@ final class IndexStateAssembler {
         IndexMetadata.Builder indexMetadataBuilder,
         IndexRoutingTable.Builder indexRoutingTableBuilder,
         DiscoveryNodes.Builder nodesBuilder,
-        Settings.Builder settingsBuilder
+        IndexShardSummary summary
     ) {
         int shardNum = dataNodeShard.getShardNum();
         indexMetadataBuilder.primaryTerm(shardNum, 1);
         ShardRole role = dataNodeShard.getShardRole();
+        // A held PRIMARY or REPLICA contributes a primary routing for this shard (a held DocRepReplica always
+        // carries its primary's allocation); a held SEARCH_REPLICA does not.
+        summary.recordShard(role != ShardRole.SEARCH_REPLICA);
         ShardId shardId = new ShardId(index, shardNum);
 
         IndexShardRoutingTable.Builder newShardRoutingTable = new IndexShardRoutingTable.Builder(shardId);
@@ -189,11 +192,6 @@ final class IndexStateAssembler {
         indexRoutingTableBuilder.addIndexShard(newShardRoutingTable.build());
         inSyncAllocationIds.add(shardRouting.allocationId().getId());
         indexMetadataBuilder.putInSyncAllocationIds(shardNum, inSyncAllocationIds);
-        if (role == ShardRole.SEARCH_REPLICA) {
-            // For local search replicas, we have no reference to the primary shard, so we must claim that
-            // the index is search-only. Otherwise, an assertion in the RoutingNodes constructor will fail.
-            settingsBuilder.put(IndexMetadata.INDEX_BLOCKS_SEARCH_ONLY_SETTING.getKey(), true);
-        }
     }
 
     /**
@@ -204,13 +202,15 @@ final class IndexStateAssembler {
      * @param shardNum                the shard number being contributed
      * @param shardAssignments        the per-node assignments for this shard
      * @param indexRoutingTableBuilder accumulates the shard routing table
+     * @param summary                 accumulates per-index primary presence for the search-only finalizer
      * @return whether this shard has a primary assigned
      */
     static boolean contributeRemoteShard(
         Index index,
         int shardNum,
         List<NodeShardAssignment> shardAssignments,
-        IndexRoutingTable.Builder indexRoutingTableBuilder
+        IndexRoutingTable.Builder indexRoutingTableBuilder,
+        IndexShardSummary summary
     ) {
         ShardId shardId = new ShardId(index, shardNum);
         IndexShardRoutingTable.Builder shardRoutingTableBuilder = new IndexShardRoutingTable.Builder(shardId);
@@ -231,6 +231,7 @@ final class IndexStateAssembler {
             nodeEntry = nodeEntry.moveToStarted();
             shardRoutingTableBuilder.addShard(nodeEntry);
         }
+        summary.recordShard(shardHasPrimary);
         indexRoutingTableBuilder.addIndexShard(shardRoutingTableBuilder.build());
         return shardHasPrimary;
     }
@@ -274,6 +275,40 @@ final class IndexStateAssembler {
                 role
             );
             return RecoverySource.EmptyStoreRecoverySource.INSTANCE;
+        }
+    }
+
+    /**
+     * Applies the index-level search-only block from the shards contributed for an index. The block is set
+     * iff at least one of the index's shards has no primary routing (or the index has no shards at all),
+     * because the RoutingNodes constructor asserts, per shard, that a non-search-only index has a primary.
+     * An index-level block exempts every shard, so a single primary-less shard requires the whole index to
+     * be search-only — which is exactly how the two existing single-role builders already behave.
+     */
+    static void finalizeSearchOnly(IndexShardSummary summary, Settings.Builder settingsBuilder) {
+        if (summary.requiresSearchOnly()) {
+            settingsBuilder.put(IndexMetadata.INDEX_BLOCKS_SEARCH_ONLY_SETTING.getKey(), true);
+        }
+    }
+
+    /**
+     * Per-index accumulator over the shards a node contributes for an index (held and/or remote). A
+     * non-search-only index must have a primary for EVERY shard, so the index is search-only if any
+     * contributed shard lacks a primary, or if the index has no shards.
+     */
+    static final class IndexShardSummary {
+        private boolean hasAnyShard;
+        private boolean anyShardLacksPrimary;
+
+        void recordShard(boolean shardHasPrimary) {
+            hasAnyShard = true;
+            if (shardHasPrimary == false) {
+                anyShardLacksPrimary = true;
+            }
+        }
+
+        boolean requiresSearchOnly() {
+            return hasAnyShard == false || anyShardLacksPrimary;
         }
     }
 }

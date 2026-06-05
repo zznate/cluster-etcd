@@ -105,6 +105,7 @@ public class DataNodeState extends NodeState {
                     .settingsVersion(oldIndexMetadata.getSettingsVersion())
                     .mappingVersion(oldIndexMetadata.getMappingVersion());
             }
+            IndexStateAssembler.IndexShardSummary shardSummary = new IndexStateAssembler.IndexShardSummary();
             for (DataNodeShard dataNodeShard : assignedShards.get(index.getName())) {
                 IndexStateAssembler.contributeHeldShard(
                     index,
@@ -114,11 +115,11 @@ public class DataNodeState extends NodeState {
                     indexMetadataBuilder,
                     indexRoutingTableBuilder,
                     nodesBuilder,
-                    settingsBuilder
+                    shardSummary
                 );
-                // Set settings again, in case the held-shard contributor modified it above
-                indexMetadataBuilder.settings(settingsBuilder);
             }
+            IndexStateAssembler.finalizeSearchOnly(shardSummary, settingsBuilder);
+            indexMetadataBuilder.settings(settingsBuilder);
             IndexMetadata newIndexMetadata = indexMetadataBuilder.build();
             if (oldIndexMetadata != null && oldIndexMetadata.equals(newIndexMetadata) == false) {
                 logger.info("Index metadata for index {} changed", index.getName());

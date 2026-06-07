@@ -68,6 +68,7 @@ public class ETCDHeartbeat {
     static final String HEARTBEAT_INTERVAL_MILLIS = "heartbeatIntervalMillis";
     static final String CLUSTERLESS_ROLE = "clusterlessRole";
     static final String CLUSTERLESS_SHARD_ID = "clusterlessShardId";
+    static final String COORDINATES = "coordinates";
     static final String CPU_USED_PERCENT = "cpuUsedPercent";
     static final String MEMORY_USED_PERCENT = "memoryUsedPercent";
     static final String MEMORY_MAX_MB = "memoryMaxMB";
@@ -97,6 +98,7 @@ public class ETCDHeartbeat {
     private final Integer httpPort;
     private final String clusterlessRole;
     private final String clusterlessShardId;
+    private final boolean combinedRoleEnabled;
     private final ETCDClientHolder etcdClientHolder;
     private final org.opensearch.transport.client.Client openSearchClient;
     private final ThreadPool threadPool;
@@ -145,6 +147,8 @@ public class ETCDHeartbeat {
             }
         }
         this.httpPort = httpPortValue;
+
+        this.combinedRoleEnabled = ClusterETCDPlugin.COMBINED_ROLE_ENABLED_SETTING.get(settings);
 
         this.clusterlessRole = localNode.getAttributes()
             .getOrDefault(
@@ -235,6 +239,10 @@ public class ETCDHeartbeat {
             }
             if (clusterlessShardId != null) {
                 heartbeatData.put(CLUSTERLESS_SHARD_ID, clusterlessShardId);
+            }
+            if (combinedRoleEnabled) {
+                // Advertise that this node also coordinates, so the controller attaches remote_shards to it.
+                heartbeatData.put(COORDINATES, true);
             }
             heartbeatData.put(CPU_USED_PERCENT, cpuPercent);
             heartbeatData.put(MEMORY_USED_PERCENT, memoryPercent);

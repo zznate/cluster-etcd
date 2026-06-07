@@ -57,6 +57,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
+import org.mockito.ArgumentCaptor;
+
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
@@ -103,6 +105,79 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
         }
         // The test should complete without hanging, indicating proper scheduler management
         assertTrue("Test completed successfully", true);
+    }
+
+    public void testHeartbeatAdvertisesCoordinatesWhenCombinedRoleEnabled() {
+        DiscoveryNode localNode = createMockDiscoveryNode();
+        Client etcdClient = mock(Client.class);
+        KV kvClient = mock(KV.class);
+        NodeEnvironment nodeEnvironment = null;
+
+        ClusterService clusterService = mock(ClusterService.class);
+        when(clusterService.getClusterName()).thenReturn(CLUSTER_NAME);
+        when(clusterService.state()).thenReturn(ClusterState.builder(CLUSTER_NAME).build());
+        Settings settings = Settings.builder().put("http.port", "9200").put("cluster.etcd.combined_role.enabled", true).build();
+        when(clusterService.getSettings()).thenReturn(settings);
+
+        when(etcdClient.getKVClient()).thenReturn(kvClient);
+        when(kvClient.put(any(ByteSequence.class), any(ByteSequence.class))).thenReturn(CompletableFuture.completedFuture(null));
+
+        ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(Settings.EMPTY));
+        ArgumentCaptor<ByteSequence> valueCaptor = ArgumentCaptor.forClass(ByteSequence.class);
+        try {
+            ETCDHeartbeat heartbeat = new ETCDHeartbeat(
+                localNode,
+                new ETCDClientHolder(() -> etcdClient),
+                createMockOpenSearchClient(),
+                nodeEnvironment,
+                clusterService,
+                threadPool,
+                100
+            );
+            heartbeat.start();
+            await().atMost(5, TimeUnit.SECONDS)
+                .untilAsserted(() -> verify(kvClient, atLeastOnce()).put(any(ByteSequence.class), any(ByteSequence.class)));
+        } finally {
+            threadPool.shutdown();
+        }
+
+        verify(kvClient, atLeastOnce()).put(any(ByteSequence.class), valueCaptor.capture());
+        String json = valueCaptor.getValue().toString(StandardCharsets.UTF_8);
+        assertTrue("heartbeat should advertise coordinates: " + json, json.contains("\"coordinates\":true"));
+    }
+
+    public void testHeartbeatOmitsCoordinatesByDefault() {
+        DiscoveryNode localNode = createMockDiscoveryNode();
+        Client etcdClient = mock(Client.class);
+        KV kvClient = mock(KV.class);
+        NodeEnvironment nodeEnvironment = null;
+        ClusterService clusterService = createMockClusterService();
+
+        when(etcdClient.getKVClient()).thenReturn(kvClient);
+        when(kvClient.put(any(ByteSequence.class), any(ByteSequence.class))).thenReturn(CompletableFuture.completedFuture(null));
+
+        ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(Settings.EMPTY));
+        ArgumentCaptor<ByteSequence> valueCaptor = ArgumentCaptor.forClass(ByteSequence.class);
+        try {
+            ETCDHeartbeat heartbeat = new ETCDHeartbeat(
+                localNode,
+                new ETCDClientHolder(() -> etcdClient),
+                createMockOpenSearchClient(),
+                nodeEnvironment,
+                clusterService,
+                threadPool,
+                100
+            );
+            heartbeat.start();
+            await().atMost(5, TimeUnit.SECONDS)
+                .untilAsserted(() -> verify(kvClient, atLeastOnce()).put(any(ByteSequence.class), any(ByteSequence.class)));
+        } finally {
+            threadPool.shutdown();
+        }
+
+        verify(kvClient, atLeastOnce()).put(any(ByteSequence.class), valueCaptor.capture());
+        String json = valueCaptor.getValue().toString(StandardCharsets.UTF_8);
+        assertFalse("default heartbeat should not advertise coordinates: " + json, json.contains("coordinates"));
     }
 
     public void testETCDHeartbeatBasicMockingBehavior() throws InterruptedException {

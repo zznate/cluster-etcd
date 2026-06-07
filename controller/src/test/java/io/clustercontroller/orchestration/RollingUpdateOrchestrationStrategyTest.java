@@ -2,6 +2,7 @@ package io.clustercontroller.orchestration;
 
 import com.google.common.util.concurrent.AtomicDouble;
 import io.clustercontroller.metrics.MetricsProvider;
+import io.clustercontroller.models.CoordinatorGoalState;
 import io.clustercontroller.models.Index;
 import io.clustercontroller.models.IndexSettings;
 import io.clustercontroller.models.ShardAllocation;
@@ -11,6 +12,7 @@ import io.clustercontroller.store.MetadataStore;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -18,6 +20,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
@@ -74,6 +77,31 @@ class RollingUpdateOrchestrationStrategyTest {
             anyDouble(),
             anyMap()
         );
+    }
+
+    @Test
+    void cleanupPreservesRemoteShardsForCombinedNode() throws Exception {
+        String clusterId = "test-cluster";
+
+        // A combined node whose only held shard is no longer planned: cleanup will rewrite its goal state.
+        SearchUnitGoalState goalState = new SearchUnitGoalState();
+        Map<String, Map<String, String>> localShards = new HashMap<>();
+        localShards.put("stale-index", new HashMap<>(Map.of("0", "PRIMARY")));
+        goalState.setLocalShards(localShards);
+        goalState.setRemoteShards(new CoordinatorGoalState.RemoteShards());
+
+        when(metadataStore.getAllNodesWithGoalStates(clusterId)).thenReturn(List.of("node1"));
+        when(metadataStore.getSearchUnitGoalState(clusterId, "node1")).thenReturn(goalState);
+        when(metadataStore.getPlannedAllocation(clusterId, "stale-index", "0")).thenReturn(null);
+        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(List.of());
+
+        strategy.orchestrate(clusterId);
+
+        ArgumentCaptor<SearchUnitGoalState> captor = ArgumentCaptor.forClass(SearchUnitGoalState.class);
+        verify(metadataStore).setSearchUnitGoalState(eq(clusterId), eq("node1"), captor.capture());
+        // local_shards is cleaned up, but the coordinator view must survive the rewrite.
+        assertThat(captor.getValue().getLocalShards()).isEmpty();
+        assertThat(captor.getValue().getRemoteShards()).isNotNull();
     }
 
     @Test

@@ -379,6 +379,8 @@ public class RollingUpdateOrchestrationStrategy implements GoalStateOrchestratio
         if (removedCount > 0) {
             SearchUnitGoalState updatedGoalState = new SearchUnitGoalState();
             updatedGoalState.setLocalShards(shardsToKeep);
+            // Preserve remote_shards: a combined node's coordinator view must survive local_shards cleanup.
+            updatedGoalState.setRemoteShards(goalState.getRemoteShards());
             metadataStore.setSearchUnitGoalState(clusterId, nodeId, updatedGoalState);
             log.debug("Updated goal state for node {} after cleanup: {} index/shard entries removed", 
                     nodeId, removedCount);

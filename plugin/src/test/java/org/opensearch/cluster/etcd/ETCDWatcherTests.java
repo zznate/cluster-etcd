@@ -86,7 +86,8 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                     mockNodeStateApplier,
                     etcdClientHolder,
                     threadPool,
-                    clusterName
+                    clusterName,
+                    false
                 )
             ) {
                 assertNull(mockNodeStateApplier.appliedNodeState.get());
@@ -166,7 +167,8 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                     mockNodeStateApplier,
                     etcdClientHolder,
                     threadPool,
-                    clusterName
+                    clusterName,
+                    false
                 )
             ) {
                 assertNull(mockNodeStateApplier.appliedNodeState.get());
@@ -299,7 +301,8 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                     mockNodeStateApplier,
                     etcdClientHolder,
                     threadPool,
-                    clusterName
+                    clusterName,
+                    false
                 )
             ) {
                 // Add coordinator node configuration with remote_clusters
@@ -387,7 +390,8 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                     mockNodeStateApplier,
                     etcdClientHolder,
                     threadPool,
-                    clusterName
+                    clusterName,
+                    false
                 )
             ) {
                 assertNull(mockNodeStateApplier.appliedNodeState.get());

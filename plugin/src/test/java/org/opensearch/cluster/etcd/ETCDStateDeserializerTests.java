@@ -12,6 +12,7 @@ import io.etcd.jetcd.api.KeyValue;
 import io.etcd.jetcd.api.RangeResponse;
 import io.etcd.jetcd.kv.GetResponse;
 import org.opensearch.cluster.ClusterState;
+import org.opensearch.cluster.etcd.changeapplier.CombinedNodeState;
 import org.opensearch.cluster.etcd.changeapplier.DataNodeState;
 import org.opensearch.cluster.etcd.changeapplier.NodeState;
 import org.opensearch.cluster.metadata.IndexMetadata;
@@ -562,5 +563,109 @@ public class ETCDStateDeserializerTests extends OpenSearchTestCase {
         IndexMetadata indexMetadata = clusterState.getMetadata().index("idx1");
         assertNotNull(indexMetadata.getIngestionStatus());
         assertFalse(indexMetadata.getIngestionStatus().isPaused());
+    }
+
+    private static final String COMBINED_CONFIGURATION = """
+        {
+            "local_shards": {
+                "idx1": {
+                    "0" : "PRIMARY"
+                }
+            },
+            "remote_shards": {
+                "indices": {
+                    "idx2": {
+                        "shard_routing": [
+                            [ { "node_name": "remote-node", "primary": true } ]
+                        ]
+                    }
+                }
+            }
+        }
+        """;
+
+    /** With the opt-in disabled, a goal state carrying both local and remote shards is rejected. */
+    public void testCombinedRoleDisabledRejectsBothShards() {
+        DiscoveryNode localNode = mock(DiscoveryNode.class);
+        when(localNode.getId()).thenReturn("local-node-id");
+        Client client = mock(Client.class);
+
+        IllegalStateException e = expectThrows(
+            IllegalStateException.class,
+            () -> ETCDStateDeserializer.deserializeNodeState(
+                localNode,
+                ByteSequence.from(COMBINED_CONFIGURATION, StandardCharsets.UTF_8),
+                client,
+                "test-cluster",
+                false
+            )
+        );
+        assertTrue(e.getMessage().contains("Both local and remote shards are present"));
+    }
+
+    /** With the opt-in enabled, both keys yield a CombinedNodeState whose watched keys union both readers'. */
+    public void testCombinedRoleEnabledBuildsCombinedNodeState() throws IOException {
+        DiscoveryNode localNode = mock(DiscoveryNode.class);
+        when(localNode.getId()).thenReturn("local-node-id");
+        Client client = mock(Client.class);
+        KV kvClient = mock(KV.class);
+        when(client.getKVClient()).thenReturn(kvClient);
+
+        ByteSequence idx1SettingsPath = ByteSequence.from(
+            ETCDPathUtils.buildIndexSettingsPath("test-cluster", "idx1"),
+            StandardCharsets.UTF_8
+        );
+        ByteSequence idx1MappingsPath = ByteSequence.from(
+            ETCDPathUtils.buildIndexMappingsPath("test-cluster", "idx1"),
+            StandardCharsets.UTF_8
+        );
+        ByteSequence remoteNodeHealthPath = ByteSequence.from(
+            ETCDPathUtils.buildSearchUnitActualStatePath("test-cluster", "remote-node"),
+            StandardCharsets.UTF_8
+        );
+
+        RangeResponse idx1SettingsResponse = RangeResponse.newBuilder().addKvs(KeyValue.newBuilder().setValue(ByteString.copyFrom("""
+            {
+              "index": {
+                "number_of_shards": "1",
+                "number_of_replicas": "0"
+              }
+            }
+            """, StandardCharsets.UTF_8)).build()).build();
+        RangeResponse idx1MappingsResponse = RangeResponse.newBuilder().addKvs(KeyValue.newBuilder().setValue(ByteString.copyFrom("""
+            {
+              "properties": {
+                "field1": { "type": "text" }
+              }
+            }
+            """, StandardCharsets.UTF_8)).build()).build();
+        // Remote node health absent -> the node is unknown, so its actual-state path is added to keysToWatch.
+        RangeResponse emptyHealthResponse = RangeResponse.newBuilder().build();
+
+        when(kvClient.get(eq(idx1SettingsPath))).thenReturn(CompletableFuture.completedFuture(new GetResponse(idx1SettingsResponse, null)));
+        when(kvClient.get(eq(idx1MappingsPath))).thenReturn(CompletableFuture.completedFuture(new GetResponse(idx1MappingsResponse, null)));
+        when(kvClient.get(eq(remoteNodeHealthPath))).thenReturn(
+            CompletableFuture.completedFuture(new GetResponse(emptyHealthResponse, null))
+        );
+
+        ETCDStateDeserializer.NodeStateResult result = ETCDStateDeserializer.deserializeNodeState(
+            localNode,
+            ByteSequence.from(COMBINED_CONFIGURATION, StandardCharsets.UTF_8),
+            client,
+            "test-cluster",
+            false,
+            true
+        );
+
+        assertTrue("both keys with the opt-in on yield a combined node", result.nodeState() instanceof CombinedNodeState);
+        // keysToWatch is the union of the data reader's (index settings + mappings) and the coordinator reader's
+        // (the unknown remote node's actual-state path).
+        assertTrue(result.keysToWatch().contains(ETCDPathUtils.buildIndexSettingsPath("test-cluster", "idx1")));
+        assertTrue(result.keysToWatch().contains(ETCDPathUtils.buildIndexMappingsPath("test-cluster", "idx1")));
+        assertTrue(result.keysToWatch().contains(ETCDPathUtils.buildSearchUnitActualStatePath("test-cluster", "remote-node")));
+
+        ClusterState clusterState = result.nodeState().buildClusterState(ClusterState.EMPTY_STATE, indicesService);
+        assertTrue("held index present", clusterState.getMetadata().hasIndex("idx1"));
+        assertTrue("coordinated index present", clusterState.getMetadata().hasIndex("idx2"));
     }
 }

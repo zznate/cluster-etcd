@@ -84,6 +84,7 @@ public class ClusterETCDPlugin extends Plugin implements ClusterPlugin, ActionPl
             etcdClientHolder = new ETCDClientHolder(() -> Client.builder().endpoints(endpoints).build());
 
             String clusterName = clusterService.getClusterName().value();
+            boolean combinedRoleEnabled = clusterService.getClusterSettings().get(COMBINED_ROLE_ENABLED_SETTING);
 
             etcdWatcher = new ETCDWatcher(
                 localNode,
@@ -91,7 +92,8 @@ public class ClusterETCDPlugin extends Plugin implements ClusterPlugin, ActionPl
                 new ChangeApplierService(clusterService.getClusterApplierService(), GUICE_HOLDER_REF.get().indicesService),
                 etcdClientHolder,
                 threadPool,
-                clusterName
+                clusterName,
+                combinedRoleEnabled
             );
 
             new ETCDHeartbeat(localNode, etcdClientHolder, openSearchClient, nodeEnvironment, clusterService, threadPool).start();
@@ -107,9 +109,19 @@ public class ClusterETCDPlugin extends Plugin implements ClusterPlugin, ActionPl
 
     public static final Setting<String> ETCD_ENDPOINT_SETTING = Setting.simpleString("cluster.etcd.endpoint", Setting.Property.NodeScope);
 
+    /**
+     * Opt-in for the combined data+coordinator role. When false (default), a goal state carrying both
+     * local and remote shards is rejected (legacy single-role behaviour).
+     */
+    public static final Setting<Boolean> COMBINED_ROLE_ENABLED_SETTING = Setting.boolSetting(
+        "cluster.etcd.combined_role.enabled",
+        false,
+        Setting.Property.NodeScope
+    );
+
     @Override
     public List<Setting<?>> getSettings() {
-        return List.of(ETCD_ENDPOINT_SETTING);
+        return List.of(ETCD_ENDPOINT_SETTING, COMBINED_ROLE_ENABLED_SETTING);
     }
 
     @Override

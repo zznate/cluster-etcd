@@ -46,6 +46,7 @@ public class ETCDWatcher implements Closeable {
     private final AtomicReference<Runnable> pendingAction = new AtomicReference<>();
     private final ThreadPool threadPool;
     private final String clusterName;
+    private final boolean combinedRoleEnabled;
     private final Map<String, Watch.Watcher> additionalWatchers = new HashMap<>();
     private final NodeListener nodeListener = new NodeListener();
     private final ByteSequence nodeGoalStateKey;
@@ -59,7 +60,8 @@ public class ETCDWatcher implements Closeable {
         NodeStateApplier nodeStateApplier,
         ETCDClientHolder etcdClientHolder,
         ThreadPool threadPool,
-        String clusterName
+        String clusterName,
+        boolean combinedRoleEnabled
     ) throws IOException, ExecutionException, InterruptedException {
         this.localNode = localNode;
         this.nodeGoalStateKey = nodeGoalStateKey;
@@ -67,6 +69,7 @@ public class ETCDWatcher implements Closeable {
         this.nodeStateApplier = nodeStateApplier;
         this.threadPool = threadPool;
         this.clusterName = clusterName;
+        this.combinedRoleEnabled = combinedRoleEnabled;
         long revision = loadState(true);
         nodeWatcher = etcdClientHolder.getClient()
             .getWatchClient()
@@ -207,7 +210,8 @@ public class ETCDWatcher implements Closeable {
                 goalState,
                 client,
                 clusterName,
-                isInitialLoad
+                isInitialLoad,
+                combinedRoleEnabled
             );
             for (String keyToWatch : nodeStateResult.keysToWatch()) {
                 if (additionalWatchers.containsKey(keyToWatch) == false) {

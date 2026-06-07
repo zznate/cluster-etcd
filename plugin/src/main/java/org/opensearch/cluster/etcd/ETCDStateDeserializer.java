@@ -11,6 +11,7 @@ import io.etcd.jetcd.KeyValue;
 import io.etcd.jetcd.kv.GetResponse;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.opensearch.cluster.etcd.changeapplier.CombinedNodeState;
 import org.opensearch.cluster.etcd.changeapplier.CoordinatorNodeState;
 import org.opensearch.cluster.etcd.changeapplier.DataNodeShard;
 import org.opensearch.cluster.etcd.changeapplier.DataNodeState;
@@ -143,13 +144,29 @@ public final class ETCDStateDeserializer {
      * @param isInitialLoad whether this is the initial load (true) or a subsequent update (false)
      * @return the relevant node state
      */
-    @SuppressWarnings("unchecked")
     public static NodeStateResult deserializeNodeState(
         DiscoveryNode localNode,
         ByteSequence byteSequence,
         Client etcdClient,
         String clusterName,
         boolean isInitialLoad
+    ) throws IOException {
+        return deserializeNodeState(localNode, byteSequence, etcdClient, clusterName, isInitialLoad, false);
+    }
+
+    /**
+     * @param combinedRoleEnabled when true, a goal state carrying BOTH local and remote shards yields a
+     *                            {@link CombinedNodeState}; when false, that combination throws (the legacy
+     *                            single-role-only behaviour).
+     */
+    @SuppressWarnings("unchecked")
+    public static NodeStateResult deserializeNodeState(
+        DiscoveryNode localNode,
+        ByteSequence byteSequence,
+        Client etcdClient,
+        String clusterName,
+        boolean isInitialLoad,
+        boolean combinedRoleEnabled
     ) throws IOException {
         Map<String, Object> map;
         try (
@@ -161,20 +178,65 @@ public final class ETCDStateDeserializer {
         ) {
             map = parser.map();
         }
-        if (map.containsKey("local_shards")) {
-            if (map.containsKey("remote_shards")) {
-                // TODO: For now, assume a node is either a data node or a coordinator node.
+        boolean hasLocalShards = map.containsKey("local_shards");
+        boolean hasRemoteShards = map.containsKey("remote_shards");
+        if (hasLocalShards && hasRemoteShards) {
+            if (combinedRoleEnabled == false) {
+                // Opt-in disabled: keep the legacy behaviour where a node is either a data node or a coordinator.
                 throw new IllegalStateException("Both local and remote shards are present in the node state. This is not yet supported.");
             }
-            return readDataNodeState(
+            DataNodeComponents dataComponents = readDataNodeState(
                 localNode,
                 etcdClient,
                 (Map<String, Map<String, Object>>) map.get("local_shards"),
                 clusterName,
                 isInitialLoad
             );
-        } else if (map.containsKey("remote_shards")) {
-            return readCoordinatorNodeState(localNode, etcdClient, (Map<String, Object>) map.get("remote_shards"), clusterName);
+            CoordinatorComponents coordinatorComponents = readCoordinatorNodeState(
+                etcdClient,
+                (Map<String, Object>) map.get("remote_shards"),
+                clusterName
+            );
+            Set<String> keysToWatch = new HashSet<>(dataComponents.keysToWatch());
+            keysToWatch.addAll(coordinatorComponents.keysToWatch());
+            CombinedNodeState combinedNodeState = new CombinedNodeState(
+                localNode,
+                dataComponents.indices(),
+                dataComponents.assignedShards(),
+                coordinatorComponents.remoteNodes(),
+                coordinatorComponents.remoteShardAssignments(),
+                coordinatorComponents.aliases(),
+                coordinatorComponents.remoteClusters()
+            );
+            return new NodeStateResult(combinedNodeState, keysToWatch);
+        } else if (hasLocalShards) {
+            DataNodeComponents dataComponents = readDataNodeState(
+                localNode,
+                etcdClient,
+                (Map<String, Map<String, Object>>) map.get("local_shards"),
+                clusterName,
+                isInitialLoad
+            );
+            return new NodeStateResult(
+                new DataNodeState(localNode, dataComponents.indices(), dataComponents.assignedShards()),
+                dataComponents.keysToWatch()
+            );
+        } else if (hasRemoteShards) {
+            CoordinatorComponents coordinatorComponents = readCoordinatorNodeState(
+                etcdClient,
+                (Map<String, Object>) map.get("remote_shards"),
+                clusterName
+            );
+            return new NodeStateResult(
+                new CoordinatorNodeState(
+                    localNode,
+                    coordinatorComponents.remoteNodes(),
+                    coordinatorComponents.remoteShardAssignments(),
+                    coordinatorComponents.aliases(),
+                    coordinatorComponents.remoteClusters()
+                ),
+                coordinatorComponents.keysToWatch()
+            );
         }
         throw new IllegalStateException(
             "Neither local nor remote shards are present in the node state. Node state should have been removed."
@@ -182,12 +244,8 @@ public final class ETCDStateDeserializer {
     }
 
     @SuppressWarnings("unchecked")
-    private static NodeStateResult readCoordinatorNodeState(
-        DiscoveryNode localNode,
-        Client etcdClient,
-        Map<String, Object> remoteShards,
-        String clusterName
-    ) throws IOException {
+    private static CoordinatorComponents readCoordinatorNodeState(Client etcdClient, Map<String, Object> remoteShards, String clusterName)
+        throws IOException {
         Map<String, Object> indices = (Map<String, Object>) remoteShards.get("indices");
         Map<String, Object> aliases = (Map<String, Object>) remoteShards.getOrDefault("aliases", new HashMap<>());
         Map<String, Object> remoteClustersConfig = (Map<String, Object>) remoteShards.getOrDefault("remote_clusters", new HashMap<>());
@@ -274,17 +332,10 @@ public final class ETCDStateDeserializer {
             remoteShardAssignment.put(indexEntry.getKey(), shardAssignments);
         }
 
-        CoordinatorNodeState coordinatorNodeState = new CoordinatorNodeState(
-            localNode,
-            remoteNodes,
-            remoteShardAssignment,
-            aliases,
-            remoteClusters
-        );
-        return new NodeStateResult(coordinatorNodeState, keysToWatch);
+        return new CoordinatorComponents(remoteNodes, remoteShardAssignment, aliases, remoteClusters, keysToWatch);
     }
 
-    private static NodeStateResult readDataNodeState(
+    private static DataNodeComponents readDataNodeState(
         DiscoveryNode localNode,
         Client etcdClient,
         Map<String, Map<String, Object>> localShards,
@@ -363,10 +414,23 @@ public final class ETCDStateDeserializer {
             }
         }
 
-        return new NodeStateResult(new DataNodeState(localNode, indexMetadataMap, localShardAssignment), pathsToWatch);
+        return new DataNodeComponents(indexMetadataMap, localShardAssignment, pathsToWatch);
     }
 
     private record DataNodeShardConvergence(DataNodeShard shard, Collection<String> nonConvergedPaths) {
+    }
+
+    /** Parsed {@code local_shards} components, sufficient to build a {@link DataNodeState} or feed a combined node. */
+    private record DataNodeComponents(Map<String, IndexMetadataComponents> indices, Map<String, Set<DataNodeShard>> assignedShards,
+        Collection<String> keysToWatch) {
+    }
+
+    /** Parsed {@code remote_shards} components, sufficient to build a {@link CoordinatorNodeState} or feed a combined node. */
+    private record CoordinatorComponents(Collection<RemoteNode> remoteNodes, Map<
+        String,
+        List<List<NodeShardAssignment>>> remoteShardAssignments, Map<String, Object> aliases, Map<
+            String,
+            Map<String, Object>> remoteClusters, Collection<String> keysToWatch) {
     }
 
     /**

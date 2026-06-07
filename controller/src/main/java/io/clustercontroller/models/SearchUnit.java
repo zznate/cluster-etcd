@@ -25,7 +25,10 @@ public class SearchUnit {
     
     @JsonProperty("role")
     private String role; // "PRIMARY", "SEARCH_REPLICA", "COORDINATOR"
-    
+
+    @JsonProperty("coordinates")
+    private boolean coordinates; // whether this node also coordinates, orthogonal to its shard role
+
     @JsonProperty("host")
     private String host;
     

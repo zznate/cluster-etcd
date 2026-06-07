@@ -158,6 +158,7 @@ public class Discovery {
         searchUnit.setRole(actualState.getRole());
         searchUnit.setShardId(actualState.getShardId());
         searchUnit.setClusterName(actualState.getClusterName());
+        searchUnit.setCoordinates(actualState.isCoordinates());
         
         // Set node state directly from deriveNodeState 
         HealthState statePulled = actualState.deriveNodeState();

@@ -170,7 +170,31 @@ class DiscoveryTest {
         assertThat(replica.getNodeAttributes()).containsEntry("node.data", "true");
         assertThat(replica.getNodeAttributes()).containsEntry("node.ingest", "false");
     }
-    
+
+    @Test
+    void testFetchSearchUnitsFromEtcd_PropagatesCoordinatesCapability() throws Exception {
+        // Given: a data node that also advertises the coordinates capability, and one that does not
+        Map<String, SearchUnitActualState> actualStates = new HashMap<>();
+        SearchUnitActualState combined = createHealthyActualState("combined-node-1", "10.0.2.1", 9200, 9300);
+        combined.setRole("PRIMARY");
+        combined.setCoordinates(true);
+        actualStates.put("combined-node-1", combined);
+        SearchUnitActualState plainData = createHealthyActualState("data-node-1", "10.0.2.2", 9200, 9300);
+        plainData.setRole("PRIMARY");
+        actualStates.put("data-node-1", plainData);
+        when(metadataStore.getAllSearchUnitActualStates(anyString())).thenReturn(actualStates);
+
+        // When
+        List<SearchUnit> result = discovery.fetchSearchUnitsFromEtcd(TEST_CLUSTER);
+
+        // Then: the coordinates capability is carried through, orthogonal to the shard role
+        SearchUnit combinedUnit = result.stream().filter(u -> "combined-node-1".equals(u.getName())).findFirst().orElseThrow();
+        assertThat(combinedUnit.getRole()).isEqualTo("PRIMARY");
+        assertThat(combinedUnit.isCoordinates()).isTrue();
+        SearchUnit dataUnit = result.stream().filter(u -> "data-node-1".equals(u.getName())).findFirst().orElseThrow();
+        assertThat(dataUnit.isCoordinates()).isFalse();
+    }
+
     @Test
     void testFetchSearchUnitsFromEtcd_EmptyResult() throws Exception {
         // Given

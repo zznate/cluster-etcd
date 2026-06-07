@@ -78,6 +78,9 @@ public class SearchUnitActualState {
     
     @JsonProperty("clusterlessShardId")
     private String shardId; // "shard-1", "shard-2", etc.
+
+    @JsonProperty("coordinates")
+    private boolean coordinates; // whether this node also coordinates (combined data+coordinator role)
     
     @JsonProperty("cluster_name")
     private String clusterName; // "search-cluster", "analytics-cluster", etc.

@@ -534,10 +534,45 @@ public class ActualAllocationUpdater {
             log.error("ActualAllocationUpdater - Failed to update coordinator goal state: {}", e.getMessage(), e);
             return 0;
         }
-        
-        log.info("ActualAllocationUpdater - Completed coordinator goal state updates: {} shard updates across {} indexes with actual allocations: {}", 
+
+        // Attach the same remote_shards to each combined (data + coordinates) node's own goal-state so it
+        // can self-coordinate. Dedicated coordinators keep reading the shared coordinator goal-state above.
+        propagateRemoteShardsToCombinedNodes(clusterId, searchUnits, remoteShards);
+
+        log.info("ActualAllocationUpdater - Completed coordinator goal state updates: {} shard updates across {} indexes with actual allocations: {}",
             totalUpdates, indexesWithActualAllocations.size(), indexesWithActualAllocations);
         return totalUpdates;
+    }
+
+    /**
+     * For each node that advertises the coordinates capability but is a data node (not a dedicated
+     * coordinator), attach the cluster-wide remote_shards to its own per-node goal-state. This is a
+     * read-modify-write that preserves the node's local_shards. Nodes without a goal-state yet (no shards
+     * assigned) are skipped until the orchestrator writes their local_shards.
+     */
+    private void propagateRemoteShardsToCombinedNodes(
+        String clusterId,
+        List<SearchUnit> searchUnits,
+        CoordinatorGoalState.RemoteShards remoteShards
+    ) {
+        for (SearchUnit unit : searchUnits) {
+            if (unit == null || unit.isCoordinates() == false || isCoordinatorNode(unit)) {
+                continue;
+            }
+            String unitName = unit.getName();
+            try {
+                SearchUnitGoalState goalState = metadataStore.getSearchUnitGoalState(clusterId, unitName);
+                if (goalState == null) {
+                    log.debug("ActualAllocationUpdater - combined node '{}' has no goal state yet; skipping remote_shards", unitName);
+                    continue;
+                }
+                goalState.setRemoteShards(remoteShards);
+                metadataStore.setSearchUnitGoalState(clusterId, unitName, goalState);
+                log.debug("ActualAllocationUpdater - attached remote_shards to combined node '{}'", unitName);
+            } catch (Exception e) {
+                log.error("ActualAllocationUpdater - Failed to attach remote_shards to combined node '{}': {}", unitName, e.getMessage(), e);
+            }
+        }
     }
     
     /**

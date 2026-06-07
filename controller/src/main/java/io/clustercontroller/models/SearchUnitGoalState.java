@@ -1,6 +1,7 @@
 package io.clustercontroller.models;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.util.HashMap;
@@ -19,7 +20,15 @@ public class SearchUnitGoalState {
      */
     @JsonProperty("local_shards")
     private Map<String, Map<String, String>> localShards;
-    
+
+    /**
+     * Remote shard routing for a node that also coordinates (combined data+coordinator role). Omitted
+     * entirely when null, so a pure data node's goal-state document is byte-identical to before.
+     */
+    @JsonProperty("remote_shards")
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private CoordinatorGoalState.RemoteShards remoteShards;
+
     @JsonProperty("last_updated")
     private String lastUpdated;
     
@@ -37,6 +46,14 @@ public class SearchUnitGoalState {
     
     public void setLocalShards(Map<String, Map<String, String>> localShards) {
         this.localShards = localShards != null ? localShards : new HashMap<>();
+    }
+
+    public CoordinatorGoalState.RemoteShards getRemoteShards() {
+        return remoteShards;
+    }
+
+    public void setRemoteShards(CoordinatorGoalState.RemoteShards remoteShards) {
+        this.remoteShards = remoteShards;
     }
     
     public String getLastUpdated() {

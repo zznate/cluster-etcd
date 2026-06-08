@@ -1,3 +1,9 @@
+# cluster-etcd
+
+An internally-maintained fork of [opensearch-project/cluster-etcd](https://github.com/opensearch-project/cluster-etcd).
+It tracks upstream (merged periodically from the `upstream` remote) and stays mergeable, while carrying changes
+run internally rather than contributed back. Licensed under Apache-2.0 (see `LICENSE`).
+
 ## Getting started
 
 This plugin lets you run OpenSearch nodes without forming a cluster, using etcd as a shared configuration store.
